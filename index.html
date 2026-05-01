@@ -29,7 +29,7 @@
       color: #f0f0f0;
     }
     header p { font-size: clamp(11px, 2.5vw, 13px); color: #888; margin-top: 4px; }
-    #game-wrap { width: 100%; max-width: 680px; }
+    #game-wrap { width: 100%; max-width: 960px; }
     canvas {
       width: 100%;
       display: block;
@@ -52,7 +52,7 @@
   </header>
 
   <div id="game-wrap">
-    <canvas id="gc" width="680" height="400"></canvas>
+    <canvas id="gc" width="960" height="560"></canvas>
   </div>
 
   <p id="hint">SPACE or tap to jump &middot; double-tap for double-jump &middot; collect skills &middot; dodge setbacks</p>
@@ -64,7 +64,7 @@
   <script>
     const cv = document.getElementById('gc');
     const ctx = cv.getContext('2d');
-    const W = 680, H = 400, GY = 318;
+    const W = 960, H = 560, GY = 448;
     let st = 'start', animF = 0, tick = 0, score = 0, lives = 3, lvl = 0;
     let skillsGot = new Set(), grantsGot = 0, ents = [], bgObjs = [], spd = 3;
     const P = { x: 100, y: GY, vy: 0, grounded: true, inv: 0, jc: 0 };
