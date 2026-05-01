@@ -1,44 +1,71 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
+  <!-- ============================================================
+       META & SEO
+       Standard page metadata. og: tags control how the link
+       appears when shared on social media or messaging apps.
+  ============================================================ -->
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
   <meta name="description" content="An educational infinite-scroller game about the academic career path of a physicist and data scientist." />
   <meta property="og:title" content="Sci-Runner: The Scientist's Journey" />
   <meta property="og:description" content="Collect skills, earn fellowships, dodge setbacks — and make it to Principal Investigator!" />
   <title>Sci-Runner: The Scientist's Journey</title>
+
+  <!-- ============================================================
+       STYLES
+       All visual styling for the page shell (not the game itself —
+       the game is drawn on a canvas via JavaScript below).
+       To change colors, fonts, or layout of the page, edit here.
+  ============================================================ -->
   <style>
+    /* Reset: removes browser default margins and padding everywhere */
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    /* Page background and centering layout */
     body {
-      background: #0f0f1a;
+      background: #0f0f1a;           /* Deep dark navy — change for a different page bg */
       color: #e0ddd4;
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-      min-height: 100dvh;
+      min-height: 100dvh;            /* Full viewport height including mobile browser chrome */
       display: flex;
       flex-direction: column;
       align-items: center;
       justify-content: center;
       padding: 16px;
-      gap: 12px;
+      gap: 12px;                     /* Spacing between header, canvas, hint, and footer */
     }
+
+    /* Page title shown above the canvas */
     header { text-align: center; }
     header h1 {
-      font-size: clamp(18px, 4vw, 26px);
+      font-size: clamp(18px, 4vw, 26px); /* Scales fluidly with screen width */
       font-weight: 500;
       letter-spacing: -0.02em;
       color: #f0f0f0;
     }
     header p { font-size: clamp(11px, 2.5vw, 13px); color: #888; margin-top: 4px; }
+
+    /* Canvas wrapper — controls the maximum game width on wide screens.
+       Increase max-width here to make the game area wider. */
     #game-wrap { width: 100%; max-width: 960px; }
+
+    /* The game canvas — CSS width scales it to fill #game-wrap.
+       The actual resolution is set on the canvas element below. */
     canvas {
       width: 100%;
       display: block;
       border-radius: 12px;
       border: 1px solid rgba(255,255,255,0.08);
-      touch-action: none;
+      touch-action: none;            /* Prevents page scroll interference on mobile */
       cursor: pointer;
     }
+
+    /* Controls hint below the canvas */
     #hint { font-size: 11px; color: #555; text-align: center; }
+
+    /* Footer credit line */
     footer { font-size: 11px; color: #444; text-align: center; }
     footer a { color: #666; text-decoration: none; }
     footer a:hover { color: #888; }
@@ -46,362 +73,881 @@
 </head>
 <body>
 
+  <!-- ============================================================
+       PAGE SHELL
+       Visible content outside the game canvas itself.
+  ============================================================ -->
+
+  <!-- Title and subtitle shown above the game -->
   <header>
     <h1>Sci-Runner</h1>
     <p>The Scientist's Journey &middot; undergrad to principal investigator</p>
   </header>
 
+  <!-- Canvas container. The game renders entirely inside this element.
+       width/height set the internal pixel resolution of the canvas.
+       CSS in #game-wrap scales the display size separately.
+       If you change width/height here, update W, H, and GY in the JS too. -->
   <div id="game-wrap">
     <canvas id="gc" width="960" height="560"></canvas>
   </div>
 
+  <!-- Controls reminder shown below the game -->
   <p id="hint">SPACE or tap to jump &middot; double-tap for double-jump &middot; collect skills &middot; dodge setbacks</p>
 
+  <!-- Footer -->
   <footer>
     <p>Sci-Runner &middot; an educational game about the academic path in physics &amp; data science</p>
   </footer>
 
-  <script>
-    const cv = document.getElementById('gc');
-    const ctx = cv.getContext('2d');
-    const W = 960, H = 560, GY = 448;
-    let st = 'start', animF = 0, tick = 0, score = 0, lives = 3, lvl = 0;
-    let skillsGot = new Set(), grantsGot = 0, ents = [], bgObjs = [], spd = 3;
-    const P = { x: 100, y: GY, vy: 0, grounded: true, inv: 0, jc: 0 };
-    const PW = 20, PH = 50;
 
+  <!-- ============================================================
+       GAME SCRIPT
+       The entire game engine lives here. Sections are organised
+       in the order they are used:
+         1. Canvas setup and global state
+         2. Game data  (levels, obstacles, grants)
+         3. Utility functions
+         4. Game logic (physics, spawning, collision)
+         5. Draw functions (one per screen or element)
+         6. Input handling
+         7. Main loop
+  ============================================================ -->
+  <script>
+
+    /* ----------------------------------------------------------
+       1. CANVAS SETUP AND GLOBAL STATE
+
+       W, H  — internal canvas resolution in pixels.
+               Must match the width/height on the <canvas> element above.
+       GY    — Y coordinate of the ground line (measured from top).
+       st    — game state: 'start' | 'play' | 'levelup' | 'over' | 'win'
+       animF — global frame counter used to drive animations.
+       tick  — play-mode counter used to time entity spawning.
+       score — increments every frame while playing (time-based).
+       lives — remaining lives (starts at 3).
+       lvl   — index into LEVELS[] for the current career stage (0-4).
+    ---------------------------------------------------------- */
+    const cv  = document.getElementById('gc');
+    const ctx = cv.getContext('2d');
+
+    const W = 960, H = 560, GY = 448; // Canvas resolution and ground line Y position
+
+    let st    = 'start'; // Current game state
+    let animF = 0;       // Frame counter (drives all animations)
+    let tick  = 0;       // Play-mode tick (resets each level, drives spawn rate)
+    let score = 0;       // Player score — total frames survived
+    let lives = 3;       // Lives remaining
+    let lvl   = 0;       // Current level index (0 = Undergraduate)
+
+    let skillsGot = new Set(); // Names of skills collected this level
+    let grantsGot = 0;         // Number of grants collected this level
+    let ents      = [];        // All active on-screen entities (skills, grants, obstacles)
+    let bgObjs    = [];        // Background parallax objects (clouds and buildings)
+    let spd       = 3;         // Current scroll speed — updated to LEVELS[lvl].spd each level
+
+    /* Player object — all properties updated by update() each frame.
+       x, y     — position; y is the bottom edge of the player hitbox.
+       vy       — vertical velocity; negative = moving upward.
+       grounded — true while the player is standing on the ground.
+       inv      — invincibility frames remaining after a hit (counts down from 90).
+       jc       — jump count: 0 = grounded, 1 = jumped once, 2 = double-jumped. */
+    const P  = { x: 100, y: GY, vy: 0, grounded: true, inv: 0, jc: 0 };
+    const PW = 20; // Player hitbox width in pixels
+    const PH = 50; // Player hitbox height in pixels
+
+
+    /* ----------------------------------------------------------
+       2. GAME DATA
+
+       Edit LEVELS to change career stages, skills, grant requirements,
+       theme colors, and difficulty (scroll speed).
+       Edit OBS to add or remove obstacle types.
+       Edit GRANTS to add or remove fellowship names.
+    ---------------------------------------------------------- */
+
+    /* LEVELS — one entry per career stage.
+       name      : displayed in the HUD and on the level-complete screen.
+       sub       : year range shown below the name.
+       skills    : array of skill pill labels required to complete the level.
+                   Add or remove strings here to change what must be collected.
+       grantsReq : number of gold grant pills needed before level completion.
+                   Set to 0 to make grants optional for a level.
+       col       : hex color used for the HUD accent, skill pills, and ground line.
+       bgC       : hex color for the sky/background fill.
+       spd       : scroll speed for this level. Higher = faster = harder. */
     const LEVELS = [
-      { name: 'Undergraduate', sub: 'Years 1-4',
+      {
+        name: 'Undergraduate', sub: 'Years 1-4',
         skills: ['Calculus', 'Linear Algebra', 'Physics', 'Chemistry', 'Programming'],
-        grantsReq: 0, col: '#2C7BE5', bgC: '#0d1a2e', spd: 3.2 },
-      { name: "Master's Degree", sub: 'Years 5-6',
+        grantsReq: 0, col: '#2C7BE5', bgC: '#0d1a2e', spd: 3.2
+      },
+      {
+        name: "Master's Degree", sub: 'Years 5-6',
         skills: ['Statistics', 'ML Basics', 'Research Methods', 'Data Analysis', 'Thesis Writing'],
-        grantsReq: 0, col: '#7B5CB8', bgC: '#130d24', spd: 4.6 },
-      { name: 'PhD Program', sub: 'Years 7-11',
+        grantsReq: 0, col: '#7B5CB8', bgC: '#130d24', spd: 4.6
+      },
+      {
+        name: 'PhD Program', sub: 'Years 7-11',
         skills: ['Deep Learning', 'Grant Writing', 'Publishing', 'Lab Management', 'Specialization'],
-        grantsReq: 1, col: '#18905A', bgC: '#0a1c14', spd: 5.8 },
-      { name: 'Postdoctoral Research', sub: 'Years 12-15',
+        grantsReq: 1, col: '#18905A', bgC: '#0a1c14', spd: 5.8
+      },
+      {
+        name: 'Postdoctoral Research', sub: 'Years 12-15',
         skills: ['Teaching', 'Networking', 'Leadership', 'Mentorship', 'Innovation'],
-        grantsReq: 2, col: '#D0601A', bgC: '#1e0e04', spd: 7.2 },
-      { name: 'Principal Investigator', sub: 'Year 15+',
+        grantsReq: 2, col: '#D0601A', bgC: '#1e0e04', spd: 7.2
+      },
+      {
+        name: 'Principal Investigator', sub: 'Year 15+',
         skills: ['Lab Direction', 'Policy Work', 'Industry Collab', 'Tenure', 'Legacy Research'],
-        grantsReq: 3, col: '#B52B2B', bgC: '#1c0808', spd: 8.8 }
+        grantsReq: 3, col: '#B52B2B', bgC: '#1c0808', spd: 8.8
+      }
     ];
 
+    /* OBS — obstacle types. Add new entries to introduce more setback varieties.
+       lbl : text label shown on the obstacle pill.
+       c   : background color of the obstacle pill (hex). */
     const OBS = [
-      { lbl: 'Rival Scientist', c: '#B03030' }, { lbl: 'Rejected Paper', c: '#8E3060' },
-      { lbl: 'Lab Failure', c: '#5A3494' }, { lbl: 'Budget Cut', c: '#BF5B0A' },
+      { lbl: 'Rival Scientist',   c: '#B03030' },
+      { lbl: 'Rejected Paper',    c: '#8E3060' },
+      { lbl: 'Lab Failure',       c: '#5A3494' },
+      { lbl: 'Budget Cut',        c: '#BF5B0A' },
       { lbl: 'Imposter Syndrome', c: '#2C3E50' }
     ];
+
+    /* GRANTS — fellowship names shown on gold pills. Randomly selected at spawn. */
     const GRANTS = ['NSF Fellowship', 'NIH Grant', 'DOE Award', 'Sloan Fellowship'];
 
+
+    /* ----------------------------------------------------------
+       3. UTILITY FUNCTIONS
+    ---------------------------------------------------------- */
+
+    /**
+     * rr — Draws a rounded rectangle on the canvas.
+     *
+     * @param {number} x      Top-left X coordinate
+     * @param {number} y      Top-left Y coordinate
+     * @param {number} w      Width
+     * @param {number} h      Height
+     * @param {number} r      Corner radius (clamped so it never exceeds half the shape)
+     * @param {string} fill   Fill color string, or null to skip filling
+     * @param {string} stroke Stroke color string, or null to skip stroking
+     */
     function rr(x, y, w, h, r, fill, stroke) {
       const kr = Math.min(r, h / 2, w / 2);
       ctx.beginPath();
-      ctx.moveTo(x + kr, y); ctx.arcTo(x + w, y, x + w, y + h, kr);
-      ctx.arcTo(x + w, y + h, x, y + h, kr); ctx.arcTo(x, y + h, x, y, kr);
-      ctx.arcTo(x, y, x + w, y, kr); ctx.closePath();
-      if (fill != null) { ctx.fillStyle = fill; ctx.fill(); }
+      ctx.moveTo(x + kr, y);
+      ctx.arcTo(x + w, y,     x + w, y + h, kr);
+      ctx.arcTo(x + w, y + h, x,     y + h, kr);
+      ctx.arcTo(x,     y + h, x,     y,     kr);
+      ctx.arcTo(x,     y,     x + w, y,     kr);
+      ctx.closePath();
+      if (fill   != null) { ctx.fillStyle   = fill;   ctx.fill();   }
       if (stroke != null) { ctx.strokeStyle = stroke; ctx.stroke(); }
     }
 
+    /**
+     * makeBg — Populates bgObjs[] with a new set of randomly placed
+     * background decoration objects (clouds and stylised buildings).
+     * Called once on full reset; objects loop horizontally during play.
+     */
     function makeBg() {
       bgObjs = [];
       for (let i = 0; i < 12; i++) {
         const t = Math.random() < 0.55 ? 'cloud' : 'bldg';
-        bgObjs.push({ x: Math.random() * W, y: t === 'cloud' ? 40 + Math.random() * 110 : 110 + Math.random() * 90, sw: 0.3 + Math.random() * 0.7, type: t });
+        bgObjs.push({
+          x:    Math.random() * W,
+          y:    t === 'cloud' ? 40 + Math.random() * 110 : 110 + Math.random() * 90,
+          sw:   0.3 + Math.random() * 0.7, // Size weight: controls cloud/building scale
+          type: t
+        });
       }
     }
 
-    function resetPlay() { P.y = GY; P.vy = 0; P.grounded = true; P.inv = 0; P.jc = 0; ents = []; tick = 0; }
-    function fullReset() { skillsGot = new Set(); grantsGot = 0; score = 0; lives = 3; lvl = 0; spd = LEVELS[0].spd; makeBg(); resetPlay(); }
-
-    function jump() {
-      if (P.grounded) { P.vy = -15; P.grounded = false; P.jc = 1; }
-      else if (P.jc < 2) { P.vy = -12; P.jc = 2; }
+    /**
+     * resetPlay — Resets the player and clears entities for a fresh run
+     * or when advancing to the next level. Does NOT reset score, lives, or level.
+     */
+    function resetPlay() {
+      P.y = GY; P.vy = 0; P.grounded = true; P.inv = 0; P.jc = 0;
+      ents = [];
+      tick = 0;
     }
 
+    /**
+     * fullReset — Complete restart: clears all state back to level 1 with
+     * zero score and full lives. Called on first start and after game over.
+     */
+    function fullReset() {
+      skillsGot = new Set();
+      grantsGot = 0;
+      score     = 0;
+      lives     = 3;
+      lvl       = 0;
+      spd       = LEVELS[0].spd;
+      makeBg();
+      resetPlay();
+    }
+
+
+    /* ----------------------------------------------------------
+       4. GAME LOGIC
+    ---------------------------------------------------------- */
+
+    /**
+     * jump — Handles the jump mechanic.
+     * First call from grounded state triggers a regular jump.
+     * Second call mid-air triggers a double jump.
+     * Further calls are silently ignored.
+     */
+    function jump() {
+      if      (P.grounded)  { P.vy = -15; P.grounded = false; P.jc = 1; } // Regular jump
+      else if (P.jc < 2)    { P.vy = -12; P.jc = 2; }                     // Double jump
+      // jc >= 2: already used both jumps, do nothing
+    }
+
+    /**
+     * spawn — Creates one new entity off the right edge of the screen.
+     * Called every N ticks during play (N decreases with each level).
+     *
+     * Approximate spawn probabilities:
+     *   38% skill pill  — only if uncollected skills remain in the level
+     *   14% grant pill  — only if unfulfilled grant requirement remains
+     *   48% obstacle    — always eligible
+     *
+     * Skill pills appear at ground level OR high altitude (42% chance of high).
+     * Grant pills always appear high — requires a jump to collect.
+     * Obstacles always appear at ground level — must be jumped over.
+     */
     function spawn() {
-      const L = LEVELS[lvl];
-      const need = L.skills.filter(s => !skillsGot.has(s));
-      const needG = Math.max(0, L.grantsReq - grantsGot);
+      const L     = LEVELS[lvl];
+      const need  = L.skills.filter(s => !skillsGot.has(s)); // Skills not yet collected
+      const needG = Math.max(0, L.grantsReq - grantsGot);    // Grants still needed
+
       const r = Math.random();
+
       if (r < 0.38 && need.length > 0) {
+        // Skill pill
         const sk = need[Math.floor(Math.random() * need.length)];
-        const hi = Math.random() < 0.42;
+        const hi = Math.random() < 0.42; // 42% chance of spawning high (jump required)
         ents.push({ t: 'sk', lbl: sk, x: W + 44, y: hi ? GY - 108 : GY - 14, w: 92, h: 26, c: L.col, ok: true });
+
       } else if (r < 0.52 && needG > 0) {
+        // Grant/fellowship pill — always spawns high
         ents.push({ t: 'gr', lbl: GRANTS[Math.floor(Math.random() * GRANTS.length)], x: W + 56, y: GY - 102, w: 114, h: 26, c: '#C9A000', ok: true });
+
       } else {
+        // Obstacle — always at ground level
         const ob = OBS[Math.floor(Math.random() * OBS.length)];
         ents.push({ t: 'ob', lbl: ob.lbl, x: W + 50, y: GY - 20, w: 102, h: 28, c: ob.c, ok: true });
       }
     }
 
+    /**
+     * checkDone — Tests whether the current level's completion conditions are met:
+     * all skills collected AND required number of grants obtained.
+     * Transitions to 'levelup' (or 'win' on the final level) if complete.
+     */
     function checkDone() {
       const L = LEVELS[lvl];
-      if (L.skills.every(s => skillsGot.has(s)) && grantsGot >= L.grantsReq)
-        st = lvl >= LEVELS.length - 1 ? 'win' : 'levelup';
+      if (L.skills.every(s => skillsGot.has(s)) && grantsGot >= L.grantsReq) {
+        st = (lvl >= LEVELS.length - 1) ? 'win' : 'levelup';
+      }
     }
 
+    /**
+     * update — Main game logic tick. Called every frame while state is 'play'.
+     *
+     * Order of operations each frame:
+     *   1. Increment tick and score
+     *   2. Apply gravity and clamp player to ground
+     *   3. Count down invincibility frames
+     *   4. Scroll background objects (parallax)
+     *   5. Spawn a new entity at the appropriate rate
+     *   6. Scroll entities left and run collision detection
+     *   7. Remove offscreen or collected entities
+     */
     function update() {
-      if (st !== 'play') return;
-      tick++; score++;
-      P.vy += 0.72; P.y += P.vy;
-      if (P.y >= GY) { P.y = GY; P.vy = 0; P.grounded = true; P.jc = 0; }
+      if (st !== 'play') return; // Logic only runs during active play
+
+      tick++;
+      score++; // Score = total frames survived (increments ~60x per second)
+
+      // --- Gravity and vertical movement ---
+      P.vy += 0.72;  // Gravity constant. Increase to make gravity feel stronger.
+      P.y  += P.vy;
+      if (P.y >= GY) {
+        P.y = GY; P.vy = 0; P.grounded = true; P.jc = 0; // Land on ground
+      }
+
+      // --- Invincibility countdown (90 frames = 1.5 seconds at 60fps) ---
       if (P.inv > 0) P.inv--;
-      bgObjs.forEach(b => { b.x -= spd * (b.type === 'cloud' ? 0.17 : 0.43); if (b.x < -280) b.x = W + 280; });
+
+      // --- Scroll background objects at reduced speed for parallax depth ---
+      bgObjs.forEach(b => {
+        b.x -= spd * (b.type === 'cloud' ? 0.17 : 0.43); // Clouds scroll slower than buildings
+        if (b.x < -280) b.x = W + 280;                   // Wrap around when offscreen left
+      });
+
+      // --- Spawn rate: faster at higher levels. Min 50 frames between spawns. ---
       const rate = Math.max(50, 105 - lvl * 9);
       if (tick % rate === 0) spawn();
-      const px = P.x - PW / 2, py = P.y - PH;
+
+      // --- Entity movement and AABB collision detection ---
+      const px = P.x - PW / 2; // Player hitbox left edge
+      const py = P.y - PH;     // Player hitbox top edge
+
       ents.forEach(e => {
-        e.x -= spd;
-        if (!e.ok) return;
-        const ex = e.x - e.w / 2, ey = e.y - e.h / 2;
-        if (px < ex + e.w && px + PW > ex && py < ey + e.h && py + PH > ey) {
-          if (e.t === 'sk') { e.ok = false; skillsGot.add(e.lbl); checkDone(); }
-          else if (e.t === 'gr') { e.ok = false; grantsGot++; checkDone(); }
-          else if (P.inv === 0) { e.ok = false; P.inv = 90; lives--; if (lives <= 0) st = 'over'; }
+        e.x -= spd; // Move entity leftward at scroll speed
+        if (!e.ok) return; // Skip already-resolved entities
+
+        // Axis-Aligned Bounding Box (AABB) collision test
+        const ex = e.x - e.w / 2; // Entity left edge
+        const ey = e.y - e.h / 2; // Entity top edge
+        const hit = px < ex + e.w && px + PW > ex && py < ey + e.h && py + PH > ey;
+
+        if (hit) {
+          if (e.t === 'sk') {
+            // Collected a skill pill
+            e.ok = false; skillsGot.add(e.lbl); checkDone();
+          } else if (e.t === 'gr') {
+            // Collected a grant pill
+            e.ok = false; grantsGot++; checkDone();
+          } else if (P.inv === 0) {
+            // Hit an obstacle while not invincible
+            e.ok = false; P.inv = 90; lives--;
+            if (lives <= 0) st = 'over';
+          }
         }
       });
+
+      // Remove entities that have scrolled off the left edge or been collected
       ents = ents.filter(e => e.x > -160 && e.ok);
     }
 
+
+    /* ----------------------------------------------------------
+       5. DRAW FUNCTIONS
+       One function per screen or visual element.
+       These are pure rendering calls — no game state is mutated here.
+       ctx.save() / ctx.restore() are used to isolate canvas state changes.
+    ---------------------------------------------------------- */
+
+    /**
+     * drawPlayer — Draws the scientist character sprite at P.x, P.y.
+     * Built entirely from rectangles, ellipses, and lines — no images needed.
+     * Arms swing using a sine wave keyed to animF for a running animation.
+     * The sprite flickers every 3 frames while P.inv > 0 (invincible).
+     */
     function drawPlayer() {
-      if (P.inv > 0 && animF % 6 < 3) return;
+      if (P.inv > 0 && animF % 6 < 3) return; // Flicker: skip drawing every other 3-frame window
+
       const x = P.x, y = P.y;
       ctx.save();
-      ctx.fillStyle = '#1A252F'; ctx.fillRect(x - 12, y - 3, 11, 4); ctx.fillRect(x + 1, y - 3, 11, 4);
-      ctx.fillStyle = '#2C3E50'; ctx.fillRect(x - 8, y - 15, 7, 13); ctx.fillRect(x + 1, y - 15, 7, 13);
-      ctx.fillStyle = '#ECF0F1'; ctx.fillRect(x - 12, y - 38, 24, 24);
-      ctx.fillStyle = '#CDD5D8'; ctx.fillRect(x - 2, y - 38, 4, 11);
-      const sw = Math.sin(animF * 0.24) * 7;
-      ctx.fillStyle = '#ECF0F1'; ctx.fillRect(x - 19, y - 37 + sw, 8, 15); ctx.fillRect(x + 11, y - 37 - sw, 8, 15);
-      ctx.fillStyle = '#FDBCB4'; ctx.fillRect(x - 19, y - 24 + sw, 8, 5); ctx.fillRect(x + 11, y - 24 - sw, 8, 5);
-      ctx.fillStyle = '#FDBCB4'; ctx.fillRect(x - 3, y - 41, 6, 5);
-      ctx.beginPath(); ctx.ellipse(x, y - 49, 11, 12, 0, 0, Math.PI * 2); ctx.fill();
-      ctx.fillStyle = '#3D2B1F'; ctx.fillRect(x - 11, y - 62, 22, 8);
-      ctx.beginPath(); ctx.ellipse(x, y - 57, 11, 6, 0, 0, Math.PI * 2); ctx.fill();
+
+      // Feet / shoes
+      ctx.fillStyle = '#1A252F';
+      ctx.fillRect(x - 12, y - 3, 11, 4); // Left foot
+      ctx.fillRect(x + 1,  y - 3, 11, 4); // Right foot
+
+      // Trousers
+      ctx.fillStyle = '#2C3E50';
+      ctx.fillRect(x - 8, y - 15, 7, 13); // Left leg
+      ctx.fillRect(x + 1, y - 15, 7, 13); // Right leg
+
+      // Lab coat body
+      ctx.fillStyle = '#ECF0F1';
+      ctx.fillRect(x - 12, y - 38, 24, 24);
+
+      // Tie / collar detail
+      ctx.fillStyle = '#CDD5D8';
+      ctx.fillRect(x - 2, y - 38, 4, 11);
+
+      // Arms — swing opposite each other using a sine wave
+      const sw = Math.sin(animF * 0.24) * 7; // Arm swing offset in pixels
+      ctx.fillStyle = '#ECF0F1';
+      ctx.fillRect(x - 19, y - 37 + sw, 8, 15); // Left arm
+      ctx.fillRect(x + 11, y - 37 - sw, 8, 15); // Right arm (opposite phase)
+
+      // Hands
+      ctx.fillStyle = '#FDBCB4';
+      ctx.fillRect(x - 19, y - 24 + sw, 8, 5); // Left hand
+      ctx.fillRect(x + 11, y - 24 - sw, 8, 5); // Right hand
+
+      // Neck
+      ctx.fillStyle = '#FDBCB4';
+      ctx.fillRect(x - 3, y - 41, 6, 5);
+
+      // Head (ellipse)
+      ctx.beginPath();
+      ctx.ellipse(x, y - 49, 11, 12, 0, 0, Math.PI * 2);
+      ctx.fill();
+
+      // Hat brim and dome
+      ctx.fillStyle = '#3D2B1F';
+      ctx.fillRect(x - 11, y - 62, 22, 8); // Brim
+      ctx.beginPath();
+      ctx.ellipse(x, y - 57, 11, 6, 0, 0, Math.PI * 2); // Dome
+      ctx.fill();
+
+      // Glasses
       ctx.strokeStyle = '#555'; ctx.lineWidth = 1.3;
-      ctx.strokeRect(x - 10, y - 53, 8, 6); ctx.strokeRect(x + 2, y - 53, 8, 6);
-      ctx.beginPath(); ctx.moveTo(x - 2, y - 50); ctx.lineTo(x + 2, y - 50); ctx.stroke();
-      ctx.beginPath(); ctx.moveTo(x - 10, y - 50); ctx.lineTo(x - 14, y - 49); ctx.stroke();
-      ctx.beginPath(); ctx.moveTo(x + 10, y - 50); ctx.lineTo(x + 14, y - 49); ctx.stroke();
+      ctx.strokeRect(x - 10, y - 53, 8, 6);  // Left lens
+      ctx.strokeRect(x + 2,  y - 53, 8, 6);  // Right lens
+      ctx.beginPath(); ctx.moveTo(x - 2, y - 50); ctx.lineTo(x + 2,  y - 50); ctx.stroke(); // Bridge
+      ctx.beginPath(); ctx.moveTo(x - 10, y - 50); ctx.lineTo(x - 14, y - 49); ctx.stroke(); // Left arm
+      ctx.beginPath(); ctx.moveTo(x + 10, y - 50); ctx.lineTo(x + 14, y - 49); ctx.stroke(); // Right arm
+
+      // Eyes (small filled circles behind the glasses)
       ctx.fillStyle = '#222';
-      ctx.beginPath(); ctx.arc(x - 5, y - 49, 1.5, 0, Math.PI * 2); ctx.fill();
-      ctx.beginPath(); ctx.arc(x + 5, y - 49, 1.5, 0, Math.PI * 2); ctx.fill();
+      ctx.beginPath(); ctx.arc(x - 5, y - 49, 1.5, 0, Math.PI * 2); ctx.fill(); // Left eye
+      ctx.beginPath(); ctx.arc(x + 5, y - 49, 1.5, 0, Math.PI * 2); ctx.fill(); // Right eye
+
       ctx.restore();
     }
 
+    /**
+     * drawBg — Draws the scrolling parallax background for the current level.
+     * Layers (back to front):
+     *   1. Sky fill (solid color from LEVELS[lvl].bgC)
+     *   2. Clouds and buildings (scroll at different speeds for depth)
+     *   3. Ground floor tint
+     *   4. Ground line (in level theme color)
+     */
     function drawBg() {
       const L = LEVELS[Math.min(lvl, LEVELS.length - 1)];
-      ctx.fillStyle = L.bgC; ctx.fillRect(0, 0, W, GY + 2);
+
+      // Sky
+      ctx.fillStyle = L.bgC;
+      ctx.fillRect(0, 0, W, GY + 2);
+
+      // Clouds and buildings
       bgObjs.forEach(b => {
         ctx.save();
         if (b.type === 'cloud') {
-          ctx.globalAlpha = 0.3; ctx.fillStyle = '#fff';
+          // Three overlapping ellipses form a simple cloud silhouette
+          ctx.globalAlpha = 0.3;
+          ctx.fillStyle = '#fff';
           const bw = 65 + b.sw * 90;
-          ctx.beginPath(); ctx.ellipse(b.x, b.y, bw * 0.55, 16, 0, 0, Math.PI * 2); ctx.fill();
+          ctx.beginPath(); ctx.ellipse(b.x,              b.y,      bw * 0.55, 16, 0, 0, Math.PI * 2); ctx.fill();
           ctx.beginPath(); ctx.ellipse(b.x + bw * 0.18, b.y - 13, bw * 0.32, 13, 0, 0, Math.PI * 2); ctx.fill();
-          ctx.beginPath(); ctx.ellipse(b.x - bw * 0.16, b.y - 9, bw * 0.28, 11, 0, 0, Math.PI * 2); ctx.fill();
+          ctx.beginPath(); ctx.ellipse(b.x - bw * 0.16, b.y - 9,  bw * 0.28, 11, 0, 0, Math.PI * 2); ctx.fill();
         } else {
+          // Building: a rectangle with a grid of lit windows
           const bw = 34 + b.sw * 54, bh = GY - b.y;
-          ctx.globalAlpha = 0.12; ctx.fillStyle = L.col; ctx.fillRect(b.x, b.y, bw, bh);
+          ctx.globalAlpha = 0.12; ctx.fillStyle = L.col;
+          ctx.fillRect(b.x, b.y, bw, bh); // Building body
           ctx.globalAlpha = 0.08; ctx.fillStyle = '#FFFDE7';
-          for (let wi = 0; wi < Math.floor(bw / 14); wi++)
-            for (let hi = 0; hi < Math.floor(bh / 16); hi++)
+          for (let wi = 0; wi < Math.floor(bw / 14); wi++)   // Window columns
+            for (let hi = 0; hi < Math.floor(bh / 16); hi++) // Window rows
               ctx.fillRect(b.x + 4 + wi * 14, b.y + 5 + hi * 16, 8, 9);
         }
         ctx.restore();
       });
-      ctx.fillStyle = L.col + '1A'; ctx.fillRect(0, GY, W, H - GY);
+
+      // Ground floor tint (level color at ~10% opacity)
+      ctx.fillStyle = L.col + '1A'; // Appending '1A' to hex = ~10% alpha
+      ctx.fillRect(0, GY, W, H - GY);
+
+      // Ground line
       ctx.strokeStyle = L.col; ctx.lineWidth = 2;
       ctx.beginPath(); ctx.moveTo(0, GY); ctx.lineTo(W, GY); ctx.stroke();
     }
 
+    /**
+     * drawEnts — Draws all active entities on screen.
+     *
+     * Visual styles per type:
+     *   'sk' (skill pill)  — level-colored rounded pill with pulsing glow ring and gloss
+     *   'gr' (grant pill)  — gold pill with pulsing gold glow ring and gloss
+     *   'ob' (obstacle)    — dark colored pill with diagonal stripe pattern
+     */
     function drawEnts() {
       ents.forEach(e => {
-        if (!e.ok) return;
+        if (!e.ok) return; // Skip collected/hit entities
         ctx.save();
-        const ex = e.x - e.w / 2, ey = e.y - e.h / 2;
+        const ex = e.x - e.w / 2; // Entity draw left edge
+        const ey = e.y - e.h / 2; // Entity draw top edge
+
         if (e.t === 'ob') {
+          // Obstacle: colored pill with diagonal stripe texture
           rr(ex, ey, e.w, e.h, 4, e.c);
-          ctx.save(); rr(ex, ey, e.w, e.h, 4); ctx.clip();
+          ctx.save();
+          rr(ex, ey, e.w, e.h, 4); ctx.clip(); // Clip stripes inside the pill shape
           ctx.strokeStyle = 'rgba(0,0,0,0.1)'; ctx.lineWidth = 7;
           for (let sx = ex - 15; sx < ex + e.w + 15; sx += 9) {
             ctx.beginPath(); ctx.moveTo(sx, ey); ctx.lineTo(sx + 22, ey + e.h); ctx.stroke();
           }
           ctx.restore();
-          ctx.fillStyle = 'rgba(255,255,255,0.95)'; ctx.font = '500 9px sans-serif';
-          ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText(e.lbl, e.x, e.y);
+          ctx.fillStyle = 'rgba(255,255,255,0.95)';
+          ctx.font = '500 9px sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+          ctx.fillText(e.lbl, e.x, e.y);
+
         } else if (e.t === 'sk') {
+          // Skill pill: level color with animated pulsing glow ring
           rr(ex, ey, e.w, e.h, 13, e.c);
-          ctx.globalAlpha = 0.22; rr(ex + 4, ey + 3, e.w - 8, (e.h - 6) / 2, 8, '#fff');
-          const pulse = 0.4 + 0.6 * Math.abs(Math.sin(animF * 0.1 + e.x * 0.011));
+          ctx.globalAlpha = 0.22;
+          rr(ex + 4, ey + 3, e.w - 8, (e.h - 6) / 2, 8, '#fff'); // Gloss highlight on upper half
+          const pulse = 0.4 + 0.6 * Math.abs(Math.sin(animF * 0.1 + e.x * 0.011)); // Oscillates 0.4–1.0
           ctx.globalAlpha = pulse; ctx.lineWidth = 2;
-          rr(ex - 3, ey - 3, e.w + 6, e.h + 6, 16, undefined, e.c);
-          ctx.globalAlpha = 1; ctx.fillStyle = '#fff'; ctx.font = '400 9px sans-serif';
-          ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText(e.lbl, e.x, e.y);
+          rr(ex - 3, ey - 3, e.w + 6, e.h + 6, 16, undefined, e.c); // Pulsing glow ring
+          ctx.globalAlpha = 1;
+          ctx.fillStyle = '#fff'; ctx.font = '400 9px sans-serif';
+          ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+          ctx.fillText(e.lbl, e.x, e.y);
+
         } else if (e.t === 'gr') {
+          // Grant pill: gold with animated gold glow ring
           rr(ex, ey, e.w, e.h, 13, '#D4A800');
-          ctx.globalAlpha = 0.2; rr(ex + 4, ey + 3, e.w - 8, (e.h - 6) / 2, 8, '#fff');
+          ctx.globalAlpha = 0.2;
+          rr(ex + 4, ey + 3, e.w - 8, (e.h - 6) / 2, 8, '#fff'); // Gloss highlight
           const gp = 0.3 + 0.7 * Math.abs(Math.sin(animF * 0.07 + e.x * 0.009));
           ctx.globalAlpha = gp; ctx.lineWidth = 2.5;
-          rr(ex - 4, ey - 4, e.w + 8, e.h + 8, 17, undefined, '#F0C030');
-          ctx.globalAlpha = 1; ctx.fillStyle = '#3A2800'; ctx.font = '500 9px sans-serif';
-          ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText(e.lbl, e.x, e.y);
+          rr(ex - 4, ey - 4, e.w + 8, e.h + 8, 17, undefined, '#F0C030'); // Gold glow ring
+          ctx.globalAlpha = 1;
+          ctx.fillStyle = '#3A2800'; ctx.font = '500 9px sans-serif';
+          ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+          ctx.fillText(e.lbl, e.x, e.y);
         }
+
         ctx.restore();
       });
     }
 
+    /**
+     * drawHUD — Draws the heads-up display bar at the top of the canvas.
+     * Contents: level name, year range, score, life dots, skill progress bar.
+     */
     function drawHUD() {
       const L = LEVELS[Math.min(lvl, LEVELS.length - 1)];
-      ctx.fillStyle = 'rgba(15,15,26,0.88)'; ctx.fillRect(0, 0, W, 58);
+
+      // Semi-transparent dark background bar
+      ctx.fillStyle = 'rgba(15,15,26,0.88)';
+      ctx.fillRect(0, 0, W, 58);
+
+      // Bottom border in level theme color
       ctx.strokeStyle = L.col + '55'; ctx.lineWidth = 1;
       ctx.beginPath(); ctx.moveTo(0, 58); ctx.lineTo(W, 58); ctx.stroke();
-      ctx.fillStyle = L.col; ctx.font = '500 12px sans-serif'; ctx.textAlign = 'left'; ctx.textBaseline = 'top';
+
+      // Level name — top left
+      ctx.fillStyle = L.col; ctx.font = '500 12px sans-serif';
+      ctx.textAlign = 'left'; ctx.textBaseline = 'top';
       ctx.fillText(L.name.toUpperCase(), 12, 7);
-      ctx.fillStyle = '#666'; ctx.font = '400 10px sans-serif'; ctx.fillText(L.sub, 12, 22);
-      ctx.fillStyle = '#bbb'; ctx.font = '500 11px sans-serif'; ctx.textAlign = 'right';
+
+      // Year range — below level name
+      ctx.fillStyle = '#666'; ctx.font = '400 10px sans-serif';
+      ctx.fillText(L.sub, 12, 22);
+
+      // Score — top right
+      ctx.fillStyle = '#bbb'; ctx.font = '500 11px sans-serif';
+      ctx.textAlign = 'right';
       ctx.fillText('Score: ' + score, W - 52, 7);
+
+      // Life dots — 3 circles, filled red when alive, dark when lost
       for (let i = 0; i < 3; i++) {
         ctx.fillStyle = i < lives ? '#E0402A' : '#333';
         ctx.beginPath(); ctx.arc(W - 42 + i * 16, 19, 5.5, 0, Math.PI * 2); ctx.fill();
       }
-      const L2 = LEVELS[Math.min(lvl, LEVELS.length - 1)];
-      const tots = L2.skills.length, cols = L2.skills.filter(s => skillsGot.has(s)).length;
-      rr(12, 34, W - 24, 8, 4, '#1a1a2e');
-      if (cols > 0) rr(12, 34, Math.max(8, (W - 24) * cols / tots), 8, 4, L.col);
-      ctx.fillStyle = '#555'; ctx.font = '400 10px sans-serif'; ctx.textAlign = 'left'; ctx.textBaseline = 'top';
-      const gStr = L2.grantsReq > 0 ? '  ·  Grants: ' + Math.min(grantsGot, L2.grantsReq) + '/' + L2.grantsReq : '';
+
+      // Skill progress bar
+      const tots = L.skills.length;
+      const cols = L.skills.filter(s => skillsGot.has(s)).length;
+      rr(12, 34, W - 24, 8, 4, '#1a1a2e');                                             // Empty bar track
+      if (cols > 0) rr(12, 34, Math.max(8, (W - 24) * cols / tots), 8, 4, L.col);    // Filled portion
+
+      // Skills and grants count text below the bar
+      ctx.fillStyle = '#555'; ctx.font = '400 10px sans-serif';
+      ctx.textAlign = 'left'; ctx.textBaseline = 'top';
+      const gStr = L.grantsReq > 0
+        ? '  ·  Grants: ' + Math.min(grantsGot, L.grantsReq) + '/' + L.grantsReq
+        : ''; // Only show grant count on levels that require them
       ctx.fillText('Skills: ' + cols + '/' + tots + gStr, 12, 46);
     }
 
+    /**
+     * drawStart — Draws the title/start screen shown before the game begins.
+     * Features: animated starfield background, game title, level badges, start button.
+     */
     function drawStart() {
-      const L = LEVELS[0];
-      ctx.fillStyle = '#0d1220'; ctx.fillRect(0, 0, W, H);
+      const L = LEVELS[0]; // Use level 1 theme for the start screen
+
+      // Dark space background
+      ctx.fillStyle = '#0d1220';
+      ctx.fillRect(0, 0, W, H);
+
+      // Animated starfield: deterministic positions from index, opacity driven by sine
       for (let i = 0; i < 60; i++) {
-        const sx = (i * 71 + 13) % W, sy = (i * 53 + 17) % (H - 80);
-        ctx.globalAlpha = 0.2 + 0.4 * Math.abs(Math.sin(animF * 0.02 + i * 0.35));
-        ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.arc(sx, sy, 1, 0, Math.PI * 2); ctx.fill();
+        const sx = (i * 71 + 13) % W;
+        const sy = (i * 53 + 17) % (H - 80);
+        ctx.globalAlpha = 0.2 + 0.4 * Math.abs(Math.sin(animF * 0.02 + i * 0.35)); // Twinkling
+        ctx.fillStyle = '#fff';
+        ctx.beginPath(); ctx.arc(sx, sy, 1, 0, Math.PI * 2); ctx.fill();
       }
       ctx.globalAlpha = 1;
-      ctx.fillStyle = L.col; ctx.font = '500 34px sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+
+      // Game title
+      ctx.fillStyle = L.col; ctx.font = '500 34px sans-serif';
+      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
       ctx.fillText('Sci-Runner', W / 2, H / 2 - 66);
+
+      // Subtitle
       ctx.fillStyle = '#bbb'; ctx.font = '400 15px sans-serif';
       ctx.fillText("The Scientist's Journey", W / 2, H / 2 - 29);
+
+      // Tagline
       ctx.fillStyle = '#666'; ctx.font = '400 12px sans-serif';
       ctx.fillText('Collect skills · Earn fellowships · Dodge setbacks', W / 2, H / 2 - 4);
+
+      // Level badge row — one pill per career stage
       const names = ['Undergrad', "Master's", 'PhD', 'Postdoc', 'PI'];
       LEVELS.forEach((lv, i) => {
         const bx = W / 2 - 135 + i * 67, by = H / 2 + 18;
         rr(bx, by, 60, 22, 11, lv.col);
-        ctx.fillStyle = '#fff'; ctx.font = '500 9px sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+        ctx.fillStyle = '#fff'; ctx.font = '500 9px sans-serif';
+        ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
         ctx.fillText(names[i], bx + 30, by + 11);
       });
+
+      // Start button — bobs vertically using a slow sine wave
       const b = Math.abs(Math.sin(animF * 0.04)) * 5;
       rr(W / 2 - 88, H / 2 + 66 + b, 176, 36, 18, L.col);
-      ctx.fillStyle = '#fff'; ctx.font = '500 14px sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.fillStyle = '#fff'; ctx.font = '500 14px sans-serif';
+      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
       ctx.fillText('Start game', W / 2, H / 2 + 84 + b);
+
+      // Controls reminder
       ctx.fillStyle = '#444'; ctx.font = '400 10px sans-serif';
       ctx.fillText('Space · click · tap to jump', W / 2, H / 2 + 118);
     }
 
+    /**
+     * cardBg — Helper that dims the game canvas and draws a centered dark card.
+     * Used by drawLevelUp, drawOver, and drawWin.
+     *
+     * @param {number} cw Card width
+     * @param {number} ch Card height
+     * @returns {[number, number]} [cx, cy] — top-left corner coordinates of the card
+     */
     function cardBg(cw, ch) {
-      ctx.fillStyle = 'rgba(5,5,15,0.7)'; ctx.fillRect(0, 0, W, H);
+      ctx.fillStyle = 'rgba(5,5,15,0.7)';
+      ctx.fillRect(0, 0, W, H); // Dim everything behind the card
       const cx = (W - cw) / 2, cy = (H - ch) / 2;
-      rr(cx, cy, cw, ch, 16, '#141420');
+      rr(cx, cy, cw, ch, 16, '#141420'); // Card fill
       ctx.strokeStyle = 'rgba(255,255,255,0.08)'; ctx.lineWidth = 0.5;
-      rr(cx, cy, cw, ch, 16, undefined, 'rgba(255,255,255,0.08)');
+      rr(cx, cy, cw, ch, 16, undefined, 'rgba(255,255,255,0.08)'); // Subtle card border
       return [cx, cy];
     }
 
+    /**
+     * drawLevelUp — Draws the level-complete card shown between career stages.
+     * Shows: completed level name, all mastered skill pills, and a
+     * "Continue" button to advance to the next level.
+     */
     function drawLevelUp() {
-      const L = LEVELS[lvl], NL = LEVELS[lvl + 1];
+      const L  = LEVELS[lvl];     // Just-completed level
+      const NL = LEVELS[lvl + 1]; // Upcoming level
       const [cx, cy] = cardBg(392, 276);
-      ctx.fillStyle = L.col; ctx.font = '500 11px sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'top';
+
+      // "Level complete" badge
+      ctx.fillStyle = L.col; ctx.font = '500 11px sans-serif';
+      ctx.textAlign = 'center'; ctx.textBaseline = 'top';
       ctx.fillText('LEVEL COMPLETE!', W / 2, cy + 16);
-      ctx.fillStyle = '#f0f0f0'; ctx.font = '500 20px sans-serif'; ctx.fillText(L.name, W / 2, cy + 36);
-      ctx.fillStyle = '#555'; ctx.font = '400 11px sans-serif'; ctx.fillText('Skills mastered:', W / 2, cy + 68);
+
+      // Completed level name
+      ctx.fillStyle = '#f0f0f0'; ctx.font = '500 20px sans-serif';
+      ctx.fillText(L.name, W / 2, cy + 36);
+
+      // "Skills mastered" section label
+      ctx.fillStyle = '#555'; ctx.font = '400 11px sans-serif';
+      ctx.fillText('Skills mastered:', W / 2, cy + 68);
+
+      // Skill pills in a 3-column grid
       L.skills.forEach((s, i) => {
         const col = i % 3, row = Math.floor(i / 3);
         const bw = 112, bx = W / 2 - 174 + col * 116, by = cy + 86 + row * 30;
-        rr(bx, by, bw, 23, 12, L.col + '33');
-        ctx.fillStyle = L.col; ctx.font = '400 10px sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+        rr(bx, by, bw, 23, 12, L.col + '33'); // Translucent pill background
+        ctx.fillStyle = L.col; ctx.font = '400 10px sans-serif';
+        ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
         ctx.fillText(s, bx + bw / 2, by + 11.5);
       });
-      ctx.fillStyle = '#555'; ctx.font = '400 11px sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'top';
+
+      // Next level teaser
+      ctx.fillStyle = '#555'; ctx.font = '400 11px sans-serif';
+      ctx.textAlign = 'center'; ctx.textBaseline = 'top';
       ctx.fillText('Next: ' + NL.name + ' · ' + NL.sub, W / 2, cy + 180);
+
+      // Continue button styled in the NEXT level's theme color
       rr((W - 154) / 2, cy + 206, 154, 34, 17, NL.col);
       ctx.fillStyle = '#fff'; ctx.font = '500 13px sans-serif'; ctx.textBaseline = 'middle';
       ctx.fillText('Continue \u2192', W / 2, cy + 223);
     }
 
+    /**
+     * drawOver — Draws the game-over card shown when all lives are lost.
+     * Shows: current level reached, final score, and a "Try Again" button.
+     */
     function drawOver() {
       const [cx, cy] = cardBg(342, 224);
-      ctx.fillStyle = '#B03030'; ctx.font = '500 11px sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'top';
+
+      ctx.fillStyle = '#B03030'; ctx.font = '500 11px sans-serif';
+      ctx.textAlign = 'center'; ctx.textBaseline = 'top';
       ctx.fillText('SETBACK!', W / 2, cy + 18);
-      ctx.fillStyle = '#f0f0f0'; ctx.font = '500 20px sans-serif'; ctx.fillText('Experiment Failed', W / 2, cy + 38);
+
+      ctx.fillStyle = '#f0f0f0'; ctx.font = '500 20px sans-serif';
+      ctx.fillText('Experiment Failed', W / 2, cy + 38);
+
       ctx.fillStyle = '#777'; ctx.font = '400 13px sans-serif';
       ctx.fillText('Even Einstein had rejections!', W / 2, cy + 76);
       ctx.fillText('Score: ' + score + '  ·  ' + LEVELS[Math.min(lvl, LEVELS.length - 1)].name, W / 2, cy + 100);
+
+      // Try Again button
       rr((W - 152) / 2, cy + 146, 152, 34, 17, '#2C7BE5');
       ctx.fillStyle = '#fff'; ctx.font = '500 13px sans-serif'; ctx.textBaseline = 'middle';
       ctx.fillText('Try Again', W / 2, cy + 163);
     }
 
+    /**
+     * drawWin — Draws the victory screen after completing all 5 levels.
+     * Features: animated starfield, gold congratulations text, final score,
+     * and a pulsing "Play Again" button.
+     */
     function drawWin() {
-      ctx.fillStyle = '#06060f'; ctx.fillRect(0, 0, W, H);
+      ctx.fillStyle = '#06060f';
+      ctx.fillRect(0, 0, W, H);
+
+      // Animated starfield (same technique as drawStart)
       for (let i = 0; i < 60; i++) {
         const sx = (i * 73 + 11) % W, sy = (i * 59 + 7) % (H - 100);
         ctx.globalAlpha = 0.35 + 0.55 * Math.abs(Math.sin(animF * 0.025 + i * 0.4));
-        ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.arc(sx, sy, 1.2, 0, Math.PI * 2); ctx.fill();
+        ctx.fillStyle = '#fff';
+        ctx.beginPath(); ctx.arc(sx, sy, 1.2, 0, Math.PI * 2); ctx.fill();
       }
       ctx.globalAlpha = 1;
-      ctx.fillStyle = '#D4A017'; ctx.font = '500 11px sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+
+      // Congratulations text
+      ctx.fillStyle = '#D4A017'; ctx.font = '500 11px sans-serif';
+      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
       ctx.fillText('CONGRATULATIONS!', W / 2, H / 2 - 75);
-      ctx.fillStyle = '#F5D066'; ctx.font = '500 27px sans-serif'; ctx.fillText('Principal Investigator!', W / 2, H / 2 - 45);
+
+      ctx.fillStyle = '#F5D066'; ctx.font = '500 27px sans-serif';
+      ctx.fillText('Principal Investigator!', W / 2, H / 2 - 45);
+
       ctx.fillStyle = '#aaa'; ctx.font = '400 13px sans-serif';
       ctx.fillText("You've navigated the full academic journey.", W / 2, H / 2 - 9);
       ctx.fillText('Final score: ' + score, W / 2, H / 2 + 18);
+
       ctx.fillStyle = '#666'; ctx.font = '400 11px sans-serif';
       ctx.fillText('Science is better with you in it!', W / 2, H / 2 + 44);
+
+      // Pulsing Play Again button
       const b = 0.5 + 0.5 * Math.sin(animF * 0.06);
-      ctx.globalAlpha = 0.7 + 0.3 * b;
+      ctx.globalAlpha = 0.7 + 0.3 * b; // Pulses between 70% and 100% opacity
       rr((W - 162) / 2, H / 2 + 72, 162, 34, 17, '#D4A017');
-      ctx.globalAlpha = 1; ctx.fillStyle = '#3A2800'; ctx.font = '500 13px sans-serif';
+      ctx.globalAlpha = 1;
+      ctx.fillStyle = '#3A2800'; ctx.font = '500 13px sans-serif';
       ctx.fillText('Play Again', W / 2, H / 2 + 89);
     }
 
+    /**
+     * draw — Master render function. Called every frame.
+     * Clears the canvas, then delegates to the appropriate draw functions
+     * based on the current game state.
+     *
+     * Layer order during active play (back to front):
+     *   drawBg → drawEnts → drawPlayer → drawHUD → [overlay screen]
+     */
     function draw() {
       ctx.clearRect(0, 0, W, H);
-      if (st === 'start') { drawStart(); return; }
-      drawBg(); drawEnts(); drawPlayer(); drawHUD();
-      if (st === 'levelup') drawLevelUp();
-      else if (st === 'over') drawOver();
-      else if (st === 'win') drawWin();
+
+      if (st === 'start') { drawStart(); return; } // Only the start screen
+
+      // Active play layers
+      drawBg();      // Scrolling parallax background
+      drawEnts();    // Skill pills, grants, obstacles
+      drawPlayer();  // Scientist character
+      drawHUD();     // Score, lives, progress bar
+
+      // Overlay screens (drawn on top of everything when active)
+      if      (st === 'levelup') drawLevelUp();
+      else if (st === 'over')    drawOver();
+      else if (st === 'win')     drawWin();
     }
 
+
+    /* ----------------------------------------------------------
+       6. INPUT HANDLING
+       All player input — mouse, touch, and keyboard — routes through
+       the single input() function. It acts as a state machine,
+       deciding what the input means based on current game state.
+    ---------------------------------------------------------- */
+
+    /**
+     * input — Unified handler for all control methods.
+     *
+     * State transitions:
+     *   'start'         → starts the game (fullReset + 'play')
+     *   'play'          → triggers a jump
+     *   'levelup'       → advances to the next level
+     *   'over' / 'win'  → restarts from the beginning
+     */
     function input() {
-      if (st === 'start') { st = 'play'; fullReset(); }
-      else if (st === 'play') jump();
-      else if (st === 'levelup') {
-        lvl++; skillsGot = new Set(); grantsGot = 0; ents = [];
-        spd = LEVELS[lvl].spd; st = 'play'; resetPlay();
-      } else { st = 'play'; fullReset(); }
+      if (st === 'start') {
+        st = 'play';
+        fullReset();
+
+      } else if (st === 'play') {
+        jump();
+
+      } else if (st === 'levelup') {
+        lvl++;
+        skillsGot = new Set(); grantsGot = 0; ents = [];
+        spd = LEVELS[lvl].spd;
+        st = 'play';
+        resetPlay();
+
+      } else {
+        // 'over' or 'win' — full restart
+        st = 'play';
+        fullReset();
+      }
     }
 
+    // Mouse click on canvas
     cv.addEventListener('click', () => input());
+
+    // Touch tap — passive: false allows preventDefault to block page scroll on mobile
     cv.addEventListener('touchstart', e => { e.preventDefault(); input(); }, { passive: false });
+
+    // Keyboard: Space, Arrow Up, or Enter all call input()
     document.addEventListener('keydown', e => {
       if (e.code === 'Space' || e.code === 'ArrowUp') { e.preventDefault(); input(); }
       if (e.code === 'Enter') input();
     });
 
-    function loop() { animF++; update(); draw(); requestAnimationFrame(loop); }
+
+    /* ----------------------------------------------------------
+       7. MAIN LOOP
+       requestAnimationFrame syncs the loop to the display refresh
+       rate (~60fps on most screens). Each frame: increment the
+       animation counter, run game logic, then render.
+    ---------------------------------------------------------- */
+
+    /**
+     * loop — The game's main animation loop.
+     * Runs continuously via requestAnimationFrame.
+     */
+    function loop() {
+      animF++;   // Increment frame counter — drives all time-based animations
+      update();  // Run game physics and logic
+      draw();    // Render the current frame
+      requestAnimationFrame(loop); // Schedule the next frame
+    }
+
+    // Initialise all game state and kick off the loop
     fullReset();
     loop();
+
   </script>
 </body>
 </html>
